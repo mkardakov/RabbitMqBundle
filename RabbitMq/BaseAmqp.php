@@ -5,7 +5,6 @@ namespace OldSound\RabbitMqBundle\RabbitMq;
 use OldSound\RabbitMqBundle\Event\AMQPEvent;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AbstractConnection;
-use PhpAmqpLib\Connection\AMQPLazyConnection;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
@@ -20,6 +19,19 @@ abstract class BaseAmqp
     protected $routingKey = '';
     protected $autoSetupFabric = true;
     protected $basicProperties = array('content_type' => 'text/plain', 'delivery_mode' => 2);
+
+    /**
+     * Initialize confirmation mechanism for channel if enabled.
+     * See RabbitMQ {@link https://www.rabbitmq.com/confirms.html documentation}
+     *
+     * @var bool
+     */
+    protected $enableConfirmation = false;
+
+    /**
+     * @var int
+     */
+    private $waitConfirmationTimeout = 1;
 
     /**
      * @var LoggerInterface
@@ -112,7 +124,7 @@ abstract class BaseAmqp
     public function getChannel()
     {
         if (empty($this->ch) || null === $this->ch->getChannelId()) {
-            $this->ch = $this->conn->channel();
+            $this->setChannel($this->conn->channel());
         }
 
         return $this->ch;
@@ -126,6 +138,7 @@ abstract class BaseAmqp
     public function setChannel(AMQPChannel $ch)
     {
         $this->ch = $ch;
+        $this->initChannel();
     }
 
     /**
@@ -283,4 +296,86 @@ abstract class BaseAmqp
     {
         return $this->eventDispatcher;
     }
+
+    /**
+     * Close assigned channel
+     *
+     * @return void
+     */
+    protected function closeChannel()
+    {
+        if (!$this->ch) {
+            return;
+        }
+        $this->ch = null;
+    }
+
+    /**
+     * Wait for channel confirms that message is delivered after publish
+     *
+     * @return void
+     */
+    public function waitConfirmation()
+    {
+        $this->getChannel()->wait_for_pending_acks($this->waitConfirmationTimeout);
+    }
+
+    /**
+     * Set publish confirmation timeout
+     *
+     * @param int $timeout in seconds or 0 to wait forever
+     *
+     * @return void
+     * @throws \InvalidArgumentException if provided timeout isn't a integer or less than zero
+     */
+    public function setWaitConfirmationTimeout($timeout)
+    {
+        if (!is_int($timeout) || $timeout < 0) {
+            throw new \InvalidArgumentException('Confirmation timeout must be an integer and greater or equal to zero');
+        }
+        $this->waitConfirmationTimeout = $timeout;
+    }
+
+    /**
+     * Return timeout in seconds
+     *
+     * @return int
+     */
+    public function getWaitConfirmationTimeout()
+    {
+        return $this->waitConfirmationTimeout;
+    }
+
+    /**
+     * Enable channel confirmation
+     *
+     * @return void
+     */
+    public function enableConfirmation()
+    {
+        if ($this->enableConfirmation) {
+            // already enabled so we are sure that channel already properly initialized
+            return;
+        }
+
+        $this->enableConfirmation = true;
+
+        // If channel already created need to reinitialize it
+        if ($this->ch) {
+            $this->initChannel();
+        }
+    }
+
+    /**
+     * Initialize channel setting(e.g. confirmation)
+     *
+     * @return void
+     */
+    protected function initChannel()
+    {
+        if ($this->enableConfirmation) {
+            $this->ch->confirm_select();
+        }
+    }
+
 }
